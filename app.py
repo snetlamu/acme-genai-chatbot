@@ -61,4 +61,4 @@ with gr.Blocks(title="ACME GenAI ChatBot") as app:
           outputs=[text_output]
      )
 
-app.launch(server_name="0.0.0.0", server_port=80, show_api=False, ssl_keyfile="key.pem", ssl_certfile="cert.crt", ssl_verify=False)
+app.launch(server_name="0.0.0.0", server_port=443, show_api=False, ssl_keyfile="key.pem", ssl_certfile="cert.crt", ssl_verify=False)
