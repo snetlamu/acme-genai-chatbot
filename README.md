@@ -1,4 +1,3 @@
-```markdown
 # ACME AI ChatBot
 
 This application is a chat-based interface that uses AWS Bedrock for generating responses. The UI is built using Gradio and supports both text and image inputs, as well as text and image outputs. Additionally, the interface includes an option to clear the chat history.
