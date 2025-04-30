@@ -2,15 +2,14 @@ import gradio as gr
 import json
 import base64
 import boto3
-import hmac
-import hashlib
-import requests
-import traceback
-import datetime
 import os
 import re
+import time
+import traceback
 
-ai_defense_gateway_url = os.environ['AIDEF_PROXY_URL'] 
+ai_defense_gateway_url = os.environ['AIDEF_PROXY_URL']
+
+# Custom event hook to change URL before signing
 
 def change_url_to_ai_defense_after_signing(**kwargs):
     new_url = re.sub(
@@ -20,85 +19,111 @@ def change_url_to_ai_defense_after_signing(**kwargs):
     )
     kwargs["request"].url = new_url
 
+# Sends request to Bedrock
+
 def send_prompt(payload):
-     session = boto3.Session()
-     bedrock_client = session.client(
-          service_name="bedrock-runtime",
-          region_name="us-east-1",
-     )
+    session = boto3.Session()
+    bedrock_client = session.client(
+        service_name="bedrock-runtime",
+        region_name="us-east-1",
+    )
 
-     bedrock_client_event_system = bedrock_client.meta.events
-     bedrock_client_event_system.register(
-          "before-send.bedrock-runtime.InvokeModel", change_url_to_ai_defense_after_signing
-     )
+    bedrock_client.meta.events.register(
+        "before-send.bedrock-runtime.InvokeModel",
+        change_url_to_ai_defense_after_signing
+    )
 
-     model_id = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+    try:
+        response = bedrock_client.invoke_model(**payload)
+        return response
+    except Exception as e:
+        print(f"ERROR: Can't invoke model. Reason: {e}")
+        traceback.print_exc()
+        return None
 
-     try:
-          response = bedrock_client.invoke_model(**payload)
-
-          return response
-
-     except Exception as e:
-          print(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
+# Processes the model response
 
 def process_response(response):
-     body = response['body'].read().decode("utf-8")
-     response_text = json.loads(body)['content'][0]['text']
-     return response_text
+    if not response:
+        return "Error in model response."
+    body = response['body'].read().decode("utf-8")
+    response_text = json.loads(body)['content'][0]['text']
+    return response_text
 
-def chat_with_ai(text_input, image_input):
-     # Process text_input and image_input with Bedrock
-     content = []
+# Prepare message from user and send to model
 
-     image_b64 = None
+def handle_user_input(history, message):
+    content = []
+    media_type = ""
 
-     if image_input:
-          with open(image_input, "rb") as image_file:
-               image_b64 = base64.b64encode(image_file.read())
+    if message["text"]:
+        content.append({"type": "text", "text": message["text"]})
 
-     if text_input:
-          content.append({"type": "text", "text": text_input})
+    if message.get("files"):
+        for filepath in message["files"]:
+             with open(filepath, "rb") as file:
+                file_b64 = base64.b64encode(file.read()).decode("utf-8")
+                file_extension = os.path.splitext(filepath)[-1].lower()
+                media_type = "image/jpeg" if file_extension == ".jpg" or file_extension == ".jpeg" else "unsupported"
+                content.append({
+                      "type": "image",
+                      "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": file_b64
+                      }
+                })
 
-     if image_input:
-          content.append({"type": "image", "source": {"type": "base64","media_type": "image/jpeg", "data": image_b64.decode("utf-8") }})
+    request_payload = {
+        "modelId": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "contentType": "application/json",
+        "accept": "application/json",
+        "body": json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 5000,
+            "top_k": 250,
+            "stop_sequences": [],
+            "temperature": 1,
+            "top_p": 0.999,
+            "messages": [{"role": "user", "content": content}]
+        })
+    }
 
-     response = send_prompt({
-          "modelId": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-          "contentType": "application/json",
-          "accept": "application/json",
-          "body": json.dumps({
-               "anthropic_version": "bedrock-2023-05-31",
-               "max_tokens": 5000,
-               "top_k": 250,
-               "stop_sequences": [],
-               "temperature": 1,
-               "top_p": 0.999,
-               "messages": [
-                    {
-                    "role": "user",
-                    "content": content
-                    }
-               ]
-          })
-     })
+    reply_text = "Unsupported file type. Please upload a JPEG image."
+    if media_type != "unsupported":
+          response = send_prompt(request_payload)
+          reply_text = process_response(response)
+    history.append({"role": "user", "content": message["text"]})
+    history.append({"role": "assistant", "content": ""})
 
-     return process_response(response)
+    for char in reply_text:
+        history[-1]["content"] += char
+        time.sleep(0.01)
+        yield history
+    
+    return "", history
 
-# Gradio app setup
+# UI setup
+
 with gr.Blocks(title="ACME GenAI ChatBot") as app:
-     gr.Markdown("<div style='font-weight: bold; font-size: 2em' align='center'>ACME GenAI ChatBot (Approved for Internal Enterprise Use)</div>")
-     
-     with gr.Column():
-                text_input = gr.Textbox(label="Prompt", placeholder="Enter your message here...")
-                image_input = gr.Image(label="Image Input", type="filepath")
-                submit_button = gr.Button("Submit")
-                text_output = gr.Textbox(label="Response", interactive=False)
-     
-     submit_button.click(
-          chat_with_ai,
-          inputs=[text_input, image_input],
-          outputs=[text_output]
-     )
+    heading = gr.Markdown("<div style='font-weight: bold; font-size: 2em' align='center'>ACME GenAI ChatBot</div><div  style='font-weight: bold; font-size: 1em' align='center'>[Approved for Internal Enterprise Use]</div>")
 
-app.launch(server_name="0.0.0.0", server_port=443, show_api=False, ssl_keyfile="./key.pem", ssl_certfile="./certn.cer", ssl_verify=False)
+    chatbot = gr.Chatbot(elem_id="chatbot", bubble_full_width=False, type="messages")
+
+    chat_input = gr.MultimodalTextbox(
+        interactive=True,
+        file_count="single",
+        file_types=["image"],
+        placeholder="Enter message or upload file...",
+        show_label=False,
+    )
+
+    chat_msg = chat_input.submit(
+        handle_user_input, [chatbot, chat_input], [chatbot]
+    )
+
+    chat_msg.then(lambda: gr.MultimodalTextbox(interactive=True, value=None), None, [chat_input])
+
+
+if __name__ == "__main__":
+    app.launch(server_name="0.0.0.0", server_port=443, show_api=False, ssl_keyfile="./key.pem", ssl_certfile="./certn.cer", ssl_verify=False)
